@@ -1,0 +1,75 @@
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <graph edgedefault="undirected">
+    <node id="SAINT LUKE'S" />
+    <node id="MADDIE" />
+    <node id="HARLEYSVILLE PEDIATRICS" />
+    <node id="CONNECTICUT" />
+    <node id="EMILY" />
+    <node id="GILBERT ISABEL" />
+    <node id="MAY 27TH, 2019" />
+    <node id="IBUPROFEN" />
+    <node id="PEDIATRICIAN'S OFFICE" />
+    <node id="HOSPITAL" />
+    <node id="INDIVIDUAL" />
+    <node id="VIRUS" />
+    <node id="HUSBAND" />
+    <node id="NURSE" />
+    <node id="TEMPERATURE CHECK" />
+    <node id="PAULA" />
+    <node id="WILLIE ROBINSON" />
+    <node id="INSULIN REGIMEN" />
+    <node id="OZEMPIC" />
+    <node id="ENDOCRINOLOGIST" />
+    <node id="OLA" />
+    <node id="THURSDAY APPOINTMENT" />
+    <node id="MY VISION" />
+    <node id="THANK YOU" />
+    <node id="BYE BYE" />
+    <node id="CONNECTICARE" />
+    <node id="KRUPO" />
+    <node id="TAKARA ADAMS" />
+    <node id="BENTLEY BENNETT" />
+    <node id="FEVER" />
+    <node id="COUGHING" />
+    <edge source="SAINT LUKE'S" target="MADDIE" />
+    <edge source="SAINT LUKE'S" target="HARLEYSVILLE PEDIATRICS" />
+    <edge source="SAINT LUKE'S" target="CONNECTICUT" />
+    <edge source="SAINT LUKE'S" target="EMILY" />
+    <edge source="SAINT LUKE'S" target="PAULA" />
+    <edge source="SAINT LUKE'S" target="WILLIE ROBINSON" />
+    <edge source="SAINT LUKE'S" target="OLA" />
+    <edge source="SAINT LUKE'S" target="CONNECTICARE" />
+    <edge source="MADDIE" target="GILBERT ISABEL" />
+    <edge source="MADDIE" target="EMILY" />
+    <edge source="HARLEYSVILLE PEDIATRICS" target="GILBERT ISABEL" />
+    <edge source="HARLEYSVILLE PEDIATRICS" target="PEDIATRICIAN'S OFFICE" />
+    <edge source="EMILY" target="GILBERT ISABEL" />
+    <edge source="EMILY" target="IBUPROFEN" />
+    <edge source="GILBERT ISABEL" target="MAY 27TH, 2019" />
+    <edge source="GILBERT ISABEL" target="IBUPROFEN" />
+    <edge source="HOSPITAL" target="INDIVIDUAL" />
+    <edge source="INDIVIDUAL" target="VIRUS" />
+    <edge source="INDIVIDUAL" target="HUSBAND" />
+    <edge source="INDIVIDUAL" target="NURSE" />
+    <edge source="INDIVIDUAL" target="TEMPERATURE CHECK" />
+    <edge source="PAULA" target="WILLIE ROBINSON" />
+    <edge source="PAULA" target="INSULIN REGIMEN" />
+    <edge source="WILLIE ROBINSON" target="OZEMPIC" />
+    <edge source="WILLIE ROBINSON" target="ENDOCRINOLOGIST" />
+    <edge source="WILLIE ROBINSON" target="OLA" />
+    <edge source="WILLIE ROBINSON" target="THURSDAY APPOINTMENT" />
+    <edge source="WILLIE ROBINSON" target="INSULIN REGIMEN" />
+    <edge source="INSULIN REGIMEN" target="ENDOCRINOLOGIST" />
+    <edge source="ENDOCRINOLOGIST" target="THURSDAY APPOINTMENT" />
+    <edge source="MY VISION" target="THANK YOU" />
+    <edge source="MY VISION" target="BYE BYE" />
+    <edge source="THANK YOU" target="BYE BYE" />
+    <edge source="CONNECTICARE" target="KRUPO" />
+    <edge source="KRUPO" target="TAKARA ADAMS" />
+    <edge source="KRUPO" target="BENTLEY BENNETT" />
+    <edge source="TAKARA ADAMS" target="BENTLEY BENNETT" />
+    <edge source="BENTLEY BENNETT" target="FEVER" />
+    <edge source="BENTLEY BENNETT" target="COUGHING" />
+    <edge source="FEVER" target="COUGHING" />
+  </graph>
+</graphml>
