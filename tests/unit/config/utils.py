@@ -7,12 +7,12 @@ import graphrag.config.defaults as defs
 from graphrag.config.models.basic_search_config import BasicSearchConfig
 from graphrag.config.models.cache_config import CacheConfig
 from graphrag.config.models.chunking_config import ChunkingConfig
-from graphrag.config.models.claim_extraction_config import ClaimExtractionConfig
 from graphrag.config.models.cluster_graph_config import ClusterGraphConfig
 from graphrag.config.models.community_reports_config import CommunityReportsConfig
 from graphrag.config.models.drift_search_config import DRIFTSearchConfig
 from graphrag.config.models.embed_graph_config import EmbedGraphConfig
-from graphrag.config.models.entity_extraction_config import EntityExtractionConfig
+from graphrag.config.models.extract_claims_config import ClaimExtractionConfig
+from graphrag.config.models.extract_graph_config import ExtractGraphConfig
 from graphrag.config.models.global_search_config import GlobalSearchConfig
 from graphrag.config.models.graph_rag_config import GraphRagConfig
 from graphrag.config.models.input_config import InputConfig
@@ -75,7 +75,13 @@ DEFAULT_GRAPHRAG_CONFIG_SETTINGS = {
         "container_name": None,
         "storage_account_blob_url": None,
     },
-    "update_index_output": None,
+    "update_index_output": {
+        "type": defs.OUTPUT_TYPE,
+        "base_dir": defs.UPDATE_OUTPUT_BASE_DIR,
+        "connection_string": None,
+        "container_name": None,
+        "storage_account_blob_url": None,
+    },
     "cache": {
         "type": defs.CACHE_TYPE,
         "base_dir": defs.CACHE_BASE_DIR,
@@ -108,7 +114,7 @@ DEFAULT_GRAPHRAG_CONFIG_SETTINGS = {
         "random_seed": defs.NODE2VEC_RANDOM_SEED,
         "use_lcc": defs.USE_LCC,
     },
-    "embeddings": {
+    "embed_text": {
         "batch_size": defs.EMBEDDING_BATCH_SIZE,
         "batch_max_tokens": defs.EMBEDDING_BATCH_MAX_TOKENS,
         "target": defs.EMBEDDING_TARGET,
@@ -121,19 +127,20 @@ DEFAULT_GRAPHRAG_CONFIG_SETTINGS = {
         "group_by_columns": defs.CHUNK_GROUP_BY_COLUMNS,
         "strategy": defs.CHUNK_STRATEGY,
         "encoding_model": defs.ENCODING_MODEL,
+        "prepend_metadata": False,
+        "chunk_size_includes_metadata": False,
     },
     "snapshots": {
         "embeddings": defs.SNAPSHOTS_EMBEDDINGS,
         "graphml": defs.SNAPSHOTS_GRAPHML,
-        "transient": defs.SNAPSHOTS_TRANSIENT,
     },
-    "entity_extraction": {
+    "extract_graph": {
         "prompt": None,
-        "entity_types": defs.ENTITY_EXTRACTION_ENTITY_TYPES,
-        "max_gleanings": defs.ENTITY_EXTRACTION_MAX_GLEANINGS,
+        "entity_types": defs.EXTRACT_GRAPH_ENTITY_TYPES,
+        "max_gleanings": defs.EXTRACT_GRAPH_MAX_GLEANINGS,
         "strategy": None,
         "encoding_model": None,
-        "model_id": defs.ENTITY_EXTRACTION_MODEL_ID,
+        "model_id": defs.EXTRACT_GRAPH_MODEL_ID,
     },
     "summarize_descriptions": {
         "prompt": None,
@@ -149,13 +156,13 @@ DEFAULT_GRAPHRAG_CONFIG_SETTINGS = {
         "model_id": defs.COMMUNITY_REPORT_MODEL_ID,
     },
     "claim_extaction": {
-        "enabled": defs.CLAIM_EXTRACTION_ENABLED,
+        "enabled": defs.EXTRACT_CLAIMS_ENABLED,
         "prompt": None,
-        "description": defs.CLAIM_DESCRIPTION,
+        "description": defs.DESCRIPTION,
         "max_gleanings": defs.CLAIM_MAX_GLEANINGS,
         "strategy": None,
         "encoding_model": None,
-        "model_id": defs.CLAIM_EXTRACTION_MODEL_ID,
+        "model_id": defs.EXTRACT_CLAIMS_MODEL_ID,
     },
     "cluster_graph": {
         "max_cluster_size": defs.MAX_CLUSTER_SIZE,
@@ -264,13 +271,7 @@ def assert_language_model_configs(
     assert actual.requests_per_minute == expected.requests_per_minute
     assert actual.max_retries == expected.max_retries
     assert actual.max_retry_wait == expected.max_retry_wait
-    assert (
-        actual.sleep_on_rate_limit_recommendation
-        == expected.sleep_on_rate_limit_recommendation
-    )
     assert actual.concurrent_requests == expected.concurrent_requests
-    assert actual.parallelization_stagger == expected.parallelization_stagger
-    assert actual.parallelization_num_threads == expected.parallelization_num_threads
     assert actual.async_mode == expected.async_mode
     if actual.responses is not None:
         assert expected.responses is not None
@@ -314,6 +315,15 @@ def assert_reporting_configs(
 
 
 def assert_output_configs(actual: OutputConfig, expected: OutputConfig) -> None:
+    assert expected.type == actual.type
+    assert expected.base_dir == actual.base_dir
+    assert expected.connection_string == actual.connection_string
+    assert expected.container_name == actual.container_name
+    assert expected.storage_account_blob_url == actual.storage_account_blob_url
+    assert expected.cosmosdb_account_url == actual.cosmosdb_account_url
+
+
+def assert_update_output_configs(actual: OutputConfig, expected: OutputConfig) -> None:
     assert expected.type == actual.type
     assert expected.base_dir == actual.base_dir
     assert expected.connection_string == actual.connection_string
@@ -383,11 +393,10 @@ def assert_snapshots_configs(
 ) -> None:
     assert actual.embeddings == expected.embeddings
     assert actual.graphml == expected.graphml
-    assert actual.transient == expected.transient
 
 
-def assert_entity_extraction_configs(
-    actual: EntityExtractionConfig, expected: EntityExtractionConfig
+def assert_extract_graph_configs(
+    actual: ExtractGraphConfig, expected: ExtractGraphConfig
 ) -> None:
     assert actual.prompt == expected.prompt
     assert actual.entity_types == expected.entity_types
@@ -409,14 +418,15 @@ def assert_summarize_descriptions_configs(
 def assert_community_reports_configs(
     actual: CommunityReportsConfig, expected: CommunityReportsConfig
 ) -> None:
-    assert actual.prompt == expected.prompt
+    assert actual.graph_prompt == expected.graph_prompt
+    assert actual.text_prompt == expected.text_prompt
     assert actual.max_length == expected.max_length
     assert actual.max_input_length == expected.max_input_length
     assert actual.strategy == expected.strategy
     assert actual.model_id == expected.model_id
 
 
-def assert_claim_extraction_configs(
+def assert_extract_claims_configs(
     actual: ClaimExtractionConfig, expected: ClaimExtractionConfig
 ) -> None:
     assert actual.enabled == expected.enabled
@@ -549,26 +559,26 @@ def assert_graphrag_configs(actual: GraphRagConfig, expected: GraphRagConfig) ->
 
     if actual.update_index_output is not None:
         assert expected.update_index_output is not None
-        assert_output_configs(actual.update_index_output, expected.update_index_output)
+        assert_update_output_configs(
+            actual.update_index_output, expected.update_index_output
+        )
     else:
         assert expected.update_index_output is None
 
     assert_cache_configs(actual.cache, expected.cache)
     assert_input_configs(actual.input, expected.input)
     assert_embed_graph_configs(actual.embed_graph, expected.embed_graph)
-    assert_text_embedding_configs(actual.embeddings, expected.embeddings)
+    assert_text_embedding_configs(actual.embed_text, expected.embed_text)
     assert_chunking_configs(actual.chunks, expected.chunks)
     assert_snapshots_configs(actual.snapshots, expected.snapshots)
-    assert_entity_extraction_configs(
-        actual.entity_extraction, expected.entity_extraction
-    )
+    assert_extract_graph_configs(actual.extract_graph, expected.extract_graph)
     assert_summarize_descriptions_configs(
         actual.summarize_descriptions, expected.summarize_descriptions
     )
     assert_community_reports_configs(
         actual.community_reports, expected.community_reports
     )
-    assert_claim_extraction_configs(actual.claim_extraction, expected.claim_extraction)
+    assert_extract_claims_configs(actual.extract_claims, expected.extract_claims)
     assert_cluster_graph_configs(actual.cluster_graph, expected.cluster_graph)
     assert_umap_configs(actual.umap, expected.umap)
     assert_local_search_configs(actual.local_search, expected.local_search)

@@ -14,32 +14,41 @@ INIT_YAML = f"""\
 
 models:
   {defs.DEFAULT_CHAT_MODEL_ID}:
-    api_key: ${{GRAPHRAG_API_KEY}} # set this in the generated .env file
     type: {defs.LLM_TYPE.value} # or azure_openai_chat
+    # api_base: https://<instance>.openai.azure.com
+    # api_version: 2024-05-01-preview
     auth_type: {defs.AUTH_TYPE.value} # or azure_managed_identity
+    api_key: ${{GRAPHRAG_API_KEY}} # set this in the generated .env file
+    # audience: "https://cognitiveservices.azure.com/.default"
+    # organization: <organization_id>
     model: {defs.LLM_MODEL}
+    # deployment_name: <azure_model_deployment_name>
+    # encoding_model: {defs.ENCODING_MODEL} # automatically set by tiktoken if left undefined
     model_supports_json: true # recommended if this is available for your model.
-    parallelization_num_threads: {defs.PARALLELIZATION_NUM_THREADS}
-    parallelization_stagger: {defs.PARALLELIZATION_STAGGER}
+    concurrent_requests: {defs.LLM_CONCURRENT_REQUESTS} # max number of simultaneous LLM requests allowed
     async_mode: {defs.ASYNC_MODE.value} # or asyncio
-    # audience: "https://cognitiveservices.azure.com/.default"
-    # api_base: https://<instance>.openai.azure.com
-    # api_version: 2024-02-15-preview
-    # organization: <organization_id>
-    # deployment_name: <azure_model_deployment_name>
+    retry_strategy: native
+    max_retries: -1                   # set to -1 for dynamic retry logic (most optimal setting based on server response)
+    tokens_per_minute: 0              # set to 0 to disable rate limiting
+    requests_per_minute: 0            # set to 0 to disable rate limiting
   {defs.DEFAULT_EMBEDDING_MODEL_ID}:
-    api_key: ${{GRAPHRAG_API_KEY}}
     type: {defs.EMBEDDING_TYPE.value} # or azure_openai_embedding
-    auth_type: {defs.AUTH_TYPE.value} # or azure_managed_identity
-    model: {defs.EMBEDDING_MODEL}
-    parallelization_num_threads: {defs.PARALLELIZATION_NUM_THREADS}
-    parallelization_stagger: {defs.PARALLELIZATION_STAGGER}
-    async_mode: {defs.ASYNC_MODE.value} # or asyncio
     # api_base: https://<instance>.openai.azure.com
-    # api_version: 2024-02-15-preview
+    # api_version: 2024-05-01-preview
+    auth_type: {defs.AUTH_TYPE.value} # or azure_managed_identity
+    api_key: ${{GRAPHRAG_API_KEY}}
     # audience: "https://cognitiveservices.azure.com/.default"
     # organization: <organization_id>
+    model: {defs.EMBEDDING_MODEL}
     # deployment_name: <azure_model_deployment_name>
+    # encoding_model: {defs.ENCODING_MODEL} # automatically set by tiktoken if left undefined
+    model_supports_json: true # recommended if this is available for your model.
+    concurrent_requests: {defs.LLM_CONCURRENT_REQUESTS} # max number of simultaneous LLM requests allowed
+    async_mode: {defs.ASYNC_MODE.value} # or asyncio
+    retry_strategy: native
+    max_retries: -1                   # set to -1 for dynamic retry logic (most optimal setting based on server response)
+    tokens_per_minute: 0              # set to 0 to disable rate limiting
+    requests_per_minute: 0            # set to 0 to disable rate limiting
 
 vector_store:
   {defs.VECTOR_STORE_DEFAULT_ID}:
@@ -48,7 +57,7 @@ vector_store:
     container_name: {defs.VECTOR_STORE_CONTAINER_NAME}
     overwrite: {defs.VECTOR_STORE_OVERWRITE}
 
-embeddings:
+embed_text:
   model_id: {defs.DEFAULT_EMBEDDING_MODEL_ID}
   vector_store_id: {defs.VECTOR_STORE_DEFAULT_ID}
 
@@ -82,19 +91,13 @@ output:
   type: {defs.OUTPUT_TYPE.value} # [file, blob, cosmosdb]
   base_dir: "{defs.OUTPUT_BASE_DIR}"
 
-## only turn this on if running `graphrag index` with custom settings
-## we normally use `graphrag update` with the defaults
-update_index_output:
-  # type: {defs.OUTPUT_TYPE.value} # [file, blob, cosmosdb]
-  # base_dir: "{defs.UPDATE_OUTPUT_BASE_DIR}"
-
 ### Workflow settings ###
 
-entity_extraction:
-  model_id: {defs.ENTITY_EXTRACTION_MODEL_ID}
-  prompt: "prompts/entity_extraction.txt"
-  entity_types: [{",".join(defs.ENTITY_EXTRACTION_ENTITY_TYPES)}]
-  max_gleanings: {defs.ENTITY_EXTRACTION_MAX_GLEANINGS}
+extract_graph:
+  model_id: {defs.EXTRACT_GRAPH_MODEL_ID}
+  prompt: "prompts/extract_graph.txt"
+  entity_types: [{",".join(defs.EXTRACT_GRAPH_ENTITY_TYPES)}]
+  max_gleanings: {defs.EXTRACT_GRAPH_MAX_GLEANINGS}
 
 summarize_descriptions:
   model_id: {defs.SUMMARIZE_MODEL_ID}
@@ -105,16 +108,17 @@ extract_graph_nlp:
   text_analyzer:
     extractor_type: {defs.NLP_EXTRACTOR_TYPE.value} # [regex_english, syntactic_parser, cfg]
 
-claim_extraction:
+extract_claims:
   enabled: false
-  model_id: {defs.CLAIM_EXTRACTION_MODEL_ID}
-  prompt: "prompts/claim_extraction.txt"
-  description: "{defs.CLAIM_DESCRIPTION}"
+  model_id: {defs.EXTRACT_CLAIMS_MODEL_ID}
+  prompt: "prompts/extract_claims.txt"
+  description: "{defs.DESCRIPTION}"
   max_gleanings: {defs.CLAIM_MAX_GLEANINGS}
 
 community_reports:
   model_id: {defs.COMMUNITY_REPORT_MODEL_ID}
-  prompt: "prompts/community_report.txt"
+  graph_prompt: "prompts/community_report_graph.txt"
+  text_prompt: "prompts/community_report_text.txt"
   max_length: {defs.COMMUNITY_REPORT_MAX_LENGTH}
   max_input_length: {defs.COMMUNITY_REPORT_MAX_INPUT_LENGTH}
 
@@ -130,7 +134,6 @@ umap:
 snapshots:
   graphml: false
   embeddings: false
-  transient: false
 
 ### Query settings ###
 ## The prompt locations are required here, but each search method has a number of optional knobs that can be tuned.

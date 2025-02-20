@@ -5,7 +5,7 @@
 
 import numpy as np
 import pandas as pd
-from fnllm import ChatLLM
+from fnllm.types import ChatLLM
 
 import graphrag.config.defaults as defs
 from graphrag.callbacks.noop_workflow_callbacks import NoopWorkflowCallbacks
@@ -59,7 +59,7 @@ async def load_docs_in_chunks(
 ) -> list[str]:
     """Load docs into chunks for generating prompts."""
     embeddings_llm_settings = config.get_language_model_config(
-        config.embeddings.model_id
+        config.embed_text.model_id
     )
 
     dataset = await create_input(config.input, logger, root)

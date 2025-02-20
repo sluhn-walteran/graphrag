@@ -64,3 +64,7 @@ class ExtractGraphNLPConfig(BaseModel):
     text_analyzer: TextAnalyzerConfig = Field(
         description="The text analyzer configuration.", default=TextAnalyzerConfig()
     )
+    concurrent_requests: int = Field(
+        description="The number of threads to use for the extraction process.",
+        default=defs.LLM_CONCURRENT_REQUESTS,
+    )

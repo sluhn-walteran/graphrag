@@ -18,11 +18,13 @@ Backwards compatibility is not guaranteed at this time.
 """
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pandas as pd
 from pydantic import validate_call
 
+from graphrag.callbacks.noop_query_callbacks import NoopQueryCallbacks
+from graphrag.callbacks.query_callbacks import QueryCallbacks
 from graphrag.config.embeddings import (
     community_full_content_embedding,
     entity_description_embedding,
@@ -48,13 +50,9 @@ from graphrag.query.indexer_adapters import (
 from graphrag.utils.api import (
     get_embedding_store,
     load_search_prompt,
-    reformat_context_data,
     update_context_data,
 )
 from graphrag.utils.cli import redact
-
-if TYPE_CHECKING:
-    from graphrag.query.structured_search.base import SearchResult
 
 logger = PrintProgressLogger("")
 
@@ -62,7 +60,6 @@ logger = PrintProgressLogger("")
 @validate_call(config={"arbitrary_types_allowed": True})
 async def global_search(
     config: GraphRagConfig,
-    nodes: pd.DataFrame,
     entities: pd.DataFrame,
     communities: pd.DataFrame,
     community_reports: pd.DataFrame,
@@ -70,6 +67,7 @@ async def global_search(
     dynamic_community_selection: bool,
     response_type: str,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> tuple[
     str | dict[str, Any] | list[dict[str, Any]],
     str | list[pd.DataFrame] | dict[str, pd.DataFrame],
@@ -79,10 +77,9 @@ async def global_search(
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes (pd.DataFrame): A DataFrame containing the final nodes (from create_final_nodes.parquet)
-    - entities (pd.DataFrame): A DataFrame containing the final entities (from create_final_entities.parquet)
-    - communities (pd.DataFrame): A DataFrame containing the final communities (from create_final_communities.parquet)
-    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from create_final_community_reports.parquet)
+    - entities (pd.DataFrame): A DataFrame containing the final entities (from entities.parquet)
+    - communities (pd.DataFrame): A DataFrame containing the final communities (from communities.parquet)
+    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from community_reports.parquet)
     - community_level (int): The community level to search at.
     - dynamic_community_selection (bool): Enable dynamic community selection instead of using all community reports at a fixed level. Note that you can still provide community_level cap the maximum level to search.
     - response_type (str): The type of response to return.
@@ -96,43 +93,36 @@ async def global_search(
     ------
     TODO: Document any exceptions to expect.
     """
-    communities_ = read_indexer_communities(communities, nodes, community_reports)
-    reports = read_indexer_reports(
-        community_reports,
-        nodes,
+    callbacks = callbacks or []
+    full_response = ""
+    context_data = {}
+
+    def on_context(context: Any) -> None:
+        nonlocal context_data
+        context_data = context
+
+    local_callbacks = NoopQueryCallbacks()
+    local_callbacks.on_context = on_context
+    callbacks.append(local_callbacks)
+
+    async for chunk in global_search_streaming(
+        config=config,
+        entities=entities,
+        communities=communities,
+        community_reports=community_reports,
         community_level=community_level,
         dynamic_community_selection=dynamic_community_selection,
-    )
-    entities_ = read_indexer_entities(nodes, entities, community_level=community_level)
-    map_prompt = load_search_prompt(config.root_dir, config.global_search.map_prompt)
-    reduce_prompt = load_search_prompt(
-        config.root_dir, config.global_search.reduce_prompt
-    )
-    knowledge_prompt = load_search_prompt(
-        config.root_dir, config.global_search.knowledge_prompt
-    )
-
-    search_engine = get_global_search_engine(
-        config,
-        reports=reports,
-        entities=entities_,
-        communities=communities_,
         response_type=response_type,
-        dynamic_community_selection=dynamic_community_selection,
-        map_system_prompt=map_prompt,
-        reduce_system_prompt=reduce_prompt,
-        general_knowledge_inclusion_prompt=knowledge_prompt,
-    )
-    result: SearchResult = await search_engine.asearch(query=query)
-    response = result.response
-    context_data = reformat_context_data(result.context_data)  # type: ignore
-    return response, context_data
+        query=query,
+        callbacks=callbacks,
+    ):
+        full_response += chunk
+    return full_response, context_data
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
-async def global_search_streaming(
+def global_search_streaming(
     config: GraphRagConfig,
-    nodes: pd.DataFrame,
     entities: pd.DataFrame,
     communities: pd.DataFrame,
     community_reports: pd.DataFrame,
@@ -140,6 +130,7 @@ async def global_search_streaming(
     dynamic_community_selection: bool,
     response_type: str,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> AsyncGenerator:
     """Perform a global search and return the context data and response via a generator.
 
@@ -148,10 +139,9 @@ async def global_search_streaming(
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes (pd.DataFrame): A DataFrame containing the final nodes (from create_final_nodes.parquet)
-    - entities (pd.DataFrame): A DataFrame containing the final entities (from create_final_entities.parquet)
-    - communities (pd.DataFrame): A DataFrame containing the final communities (from create_final_communities.parquet)
-    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from create_final_community_reports.parquet)
+    - entities (pd.DataFrame): A DataFrame containing the final entities (from entities.parquet)
+    - communities (pd.DataFrame): A DataFrame containing the final communities (from communities.parquet)
+    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from community_reports.parquet)
     - community_level (int): The community level to search at.
     - dynamic_community_selection (bool): Enable dynamic community selection instead of using all community reports at a fixed level. Note that you can still provide community_level cap the maximum level to search.
     - response_type (str): The type of response to return.
@@ -165,14 +155,16 @@ async def global_search_streaming(
     ------
     TODO: Document any exceptions to expect.
     """
-    communities_ = read_indexer_communities(communities, nodes, community_reports)
+    communities_ = read_indexer_communities(communities, community_reports)
     reports = read_indexer_reports(
         community_reports,
-        nodes,
+        communities,
         community_level=community_level,
         dynamic_community_selection=dynamic_community_selection,
     )
-    entities_ = read_indexer_entities(nodes, entities, community_level=community_level)
+    entities_ = read_indexer_entities(
+        entities, communities, community_level=community_level
+    )
     map_prompt = load_search_prompt(config.root_dir, config.global_search.map_prompt)
     reduce_prompt = load_search_prompt(
         config.root_dir, config.global_search.reduce_prompt
@@ -191,26 +183,14 @@ async def global_search_streaming(
         map_system_prompt=map_prompt,
         reduce_system_prompt=reduce_prompt,
         general_knowledge_inclusion_prompt=knowledge_prompt,
+        callbacks=callbacks,
     )
-    search_result = search_engine.astream_search(query=query)
-
-    # when streaming results, a context data object is returned as the first result
-    # and the query response in subsequent tokens
-    context_data = None
-    get_context_data = True
-    async for stream_chunk in search_result:
-        if get_context_data:
-            context_data = reformat_context_data(stream_chunk)  # type: ignore
-            yield context_data
-            get_context_data = False
-        else:
-            yield stream_chunk
+    return search_engine.stream_search(query=query)
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
 async def multi_index_global_search(
     config: GraphRagConfig,
-    nodes_list: list[pd.DataFrame],
     entities_list: list[pd.DataFrame],
     communities_list: list[pd.DataFrame],
     community_reports_list: list[pd.DataFrame],
@@ -220,22 +200,19 @@ async def multi_index_global_search(
     response_type: str,
     streaming: bool,
     query: str,
-) -> (
-    tuple[
-        str | dict[str, Any] | list[dict[str, Any]],
-        str | list[pd.DataFrame] | dict[str, pd.DataFrame],
-    ]
-    | AsyncGenerator
-):
+    callbacks: list[QueryCallbacks] | None = None,
+) -> tuple[
+    str | dict[str, Any] | list[dict[str, Any]],
+    str | list[pd.DataFrame] | dict[str, pd.DataFrame],
+]:
     """Perform a global search across multiple indexes and return the context data and response.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes_list (list[pd.DataFrame]): A list of DataFrames containing the final nodes (from create_final_nodes.parquet)
-    - entities_list (list[pd.DataFrame]): A list of DataFrames containing the final entities (from create_final_entities.parquet)
-    - communities_list (list[pd.DataFrame]): A list of DataFrames containing the final communities (from create_final_communities.parquet)
-    - community_reports_list (list[pd.DataFrame]): A list of DataFrames containing the final community reports (from create_final_community_reports.parquet)
+    - entities_list (list[pd.DataFrame]): A list of DataFrames containing the final entities (from entities.parquet)
+    - communities_list (list[pd.DataFrame]): A list of DataFrames containing the final communities (from communities.parquet)
+    - community_reports_list (list[pd.DataFrame]): A list of DataFrames containing the final community reports (from community_reports.parquet)
     - index_names (list[str]): A list of index names.
     - community_level (int): The community level to search at.
     - dynamic_community_selection (bool): Enable dynamic community selection instead of using all community reports at a fixed level. Note that you can still provide community_level cap the maximum level to search.
@@ -257,14 +234,12 @@ async def multi_index_global_search(
         raise NotImplementedError(message)
 
     links = {
-        "nodes": {},
-        "community": {},
+        "communities": {},
         "community_reports": {},
         "entities": {},
     }
     max_vals = {
-        "nodes": -1,
-        "community": -1,
+        "communities": -1,
         "community_reports": -1,
         "entities": -1,
     }
@@ -272,28 +247,8 @@ async def multi_index_global_search(
     communities_dfs = []
     community_reports_dfs = []
     entities_dfs = []
-    nodes_dfs = []
 
     for idx, index_name in enumerate(index_names):
-        # Prepare each index's nodes dataframe for merging
-        nodes_df = nodes_list[idx]
-        nodes_df["community"] = nodes_df["community"].astype(int)
-        for i in nodes_df["human_readable_id"]:
-            links["nodes"][i + max_vals["nodes"] + 1] = {
-                "index_name": index_name,
-                "id": i,
-            }
-        if max_vals["nodes"] != -1:
-            nodes_df["human_readable_id"] += max_vals["nodes"] + 1
-        nodes_df["community"] = nodes_df["community"].apply(
-            lambda x: x + max_vals["community_reports"] + 1 if x != -1 else x
-        )
-        nodes_df["title"] = nodes_df["title"].apply(
-            lambda x, index_name=index_name: x + f"-{index_name}"
-        )
-        max_vals["nodes"] = int(nodes_df["human_readable_id"].max())
-        nodes_dfs.append(nodes_df)
-
         # Prepare each index's community reports dataframe for merging
         community_reports_df = community_reports_list[idx]
         community_reports_df["community"] = community_reports_df["community"].astype(
@@ -314,16 +269,20 @@ async def multi_index_global_search(
         communities_df["community"] = communities_df["community"].astype(int)
         communities_df["parent"] = communities_df["parent"].astype(int)
         for i in communities_df["community"]:
-            links["community"][i + max_vals["community"] + 1] = {
+            links["communities"][i + max_vals["communities"] + 1] = {
                 "index_name": index_name,
                 "id": str(i),
             }
-        communities_df["community"] += max_vals["community"] + 1
+        communities_df["community"] += max_vals["communities"] + 1
         communities_df["parent"] = communities_df["parent"].apply(
-            lambda x: x if x == -1 else x + max_vals["community"] + 1
+            lambda x: x if x == -1 else x + max_vals["communities"] + 1
         )
-        communities_df["human_readable_id"] += max_vals["community"] + 1
-        max_vals["community"] = int(communities_df["community"].max())
+        communities_df["human_readable_id"] += max_vals["communities"] + 1
+        # concat the index name to the entity_ids, since this is used for joining later
+        communities_df["entity_ids"] = communities_df["entity_ids"].apply(
+            lambda x, index_name=index_name: [i + f"-{index_name}" for i in x]
+        )
+        max_vals["communities"] = int(communities_df["community"].max())
         communities_dfs.append(communities_df)
 
         # Prepare each index's entities dataframe for merging
@@ -344,7 +303,6 @@ async def multi_index_global_search(
         entities_dfs.append(entities_df)
 
     # Merge the dataframes
-    nodes_combined = pd.concat(nodes_dfs, axis=0, ignore_index=True, sort=False)
     community_reports_combined = pd.concat(
         community_reports_dfs, axis=0, ignore_index=True, sort=False
     )
@@ -355,7 +313,6 @@ async def multi_index_global_search(
 
     result = await global_search(
         config,
-        nodes=nodes_combined,
         entities=entities_combined,
         communities=communities_combined,
         community_reports=community_reports_combined,
@@ -363,6 +320,7 @@ async def multi_index_global_search(
         dynamic_community_selection=dynamic_community_selection,
         response_type=response_type,
         query=query,
+        callbacks=callbacks,
     )
 
     # Update the context data by linking index names and community ids
@@ -374,8 +332,8 @@ async def multi_index_global_search(
 @validate_call(config={"arbitrary_types_allowed": True})
 async def local_search(
     config: GraphRagConfig,
-    nodes: pd.DataFrame,
     entities: pd.DataFrame,
+    communities: pd.DataFrame,
     community_reports: pd.DataFrame,
     text_units: pd.DataFrame,
     relationships: pd.DataFrame,
@@ -383,21 +341,20 @@ async def local_search(
     community_level: int,
     response_type: str,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> tuple[
     str | dict[str, Any] | list[dict[str, Any]],
     str | list[pd.DataFrame] | dict[str, pd.DataFrame],
 ]:
     """Perform a local search and return the context data and response.
 
-    Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes (pd.DataFrame): A DataFrame containing the final nodes (from create_final_nodes.parquet)
-    - entities (pd.DataFrame): A DataFrame containing the final entities (from create_final_entities.parquet)
-    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from create_final_community_reports.parquet)
-    - text_units (pd.DataFrame): A DataFrame containing the final text units (from create_final_text_units.parquet)
-    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from create_final_relationships.parquet)
-    - covariates (pd.DataFrame): A DataFrame containing the final covariates (from create_final_covariates.parquet)
+    - entities (pd.DataFrame): A DataFrame containing the final entities (from entities.parquet)
+    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from community_reports.parquet)
+    - text_units (pd.DataFrame): A DataFrame containing the final text units (from text_units.parquet)
+    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from relationships.parquet)
+    - covariates (pd.DataFrame): A DataFrame containing the final covariates (from covariates.parquet)
     - community_level (int): The community level to search at.
     - response_type (str): The response type to return.
     - query (str): The user query to search for.
@@ -410,42 +367,40 @@ async def local_search(
     ------
     TODO: Document any exceptions to expect.
     """
-    vector_store_args = {}
-    for index, store in config.vector_store.items():
-        vector_store_args[index] = store.model_dump()
-    logger.info(f"Vector Store Args: {redact(vector_store_args)}")  # type: ignore # noqa
+    callbacks = callbacks or []
+    full_response = ""
+    context_data = {}
 
-    description_embedding_store = get_embedding_store(
-        config_args=vector_store_args,  # type: ignore
-        embedding_name=entity_description_embedding,
-    )
-    entities_ = read_indexer_entities(nodes, entities, community_level)
-    covariates_ = read_indexer_covariates(covariates) if covariates is not None else []
-    prompt = load_search_prompt(config.root_dir, config.local_search.prompt)
+    def on_context(context: Any) -> None:
+        nonlocal context_data
+        context_data = context
 
-    search_engine = get_local_search_engine(
+    local_callbacks = NoopQueryCallbacks()
+    local_callbacks.on_context = on_context
+    callbacks.append(local_callbacks)
+
+    async for chunk in local_search_streaming(
         config=config,
-        reports=read_indexer_reports(community_reports, nodes, community_level),
-        text_units=read_indexer_text_units(text_units),
-        entities=entities_,
-        relationships=read_indexer_relationships(relationships),
-        covariates={"claims": covariates_},
-        description_embedding_store=description_embedding_store,  # type: ignore
+        entities=entities,
+        communities=communities,
+        community_reports=community_reports,
+        text_units=text_units,
+        relationships=relationships,
+        covariates=covariates,
+        community_level=community_level,
         response_type=response_type,
-        system_prompt=prompt,
-    )
-
-    result: SearchResult = await search_engine.asearch(query=query)
-    response = result.response
-    context_data = reformat_context_data(result.context_data)  # type: ignore
-    return response, context_data
+        query=query,
+        callbacks=callbacks,
+    ):
+        full_response += chunk
+    return full_response, context_data
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
-async def local_search_streaming(
+def local_search_streaming(
     config: GraphRagConfig,
-    nodes: pd.DataFrame,
     entities: pd.DataFrame,
+    communities: pd.DataFrame,
     community_reports: pd.DataFrame,
     text_units: pd.DataFrame,
     relationships: pd.DataFrame,
@@ -453,18 +408,18 @@ async def local_search_streaming(
     community_level: int,
     response_type: str,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> AsyncGenerator:
     """Perform a local search and return the context data and response via a generator.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes (pd.DataFrame): A DataFrame containing the final nodes (from create_final_nodes.parquet)
-    - entities (pd.DataFrame): A DataFrame containing the final entities (from create_final_entities.parquet)
-    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from create_final_community_reports.parquet)
-    - text_units (pd.DataFrame): A DataFrame containing the final text units (from create_final_text_units.parquet)
-    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from create_final_relationships.parquet)
-    - covariates (pd.DataFrame): A DataFrame containing the final covariates (from create_final_covariates.parquet)
+    - entities (pd.DataFrame): A DataFrame containing the final entities (from entities.parquet)
+    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from community_reports.parquet)
+    - text_units (pd.DataFrame): A DataFrame containing the final text units (from text_units.parquet)
+    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from relationships.parquet)
+    - covariates (pd.DataFrame): A DataFrame containing the final covariates (from covariates.parquet)
     - community_level (int): The community level to search at.
     - response_type (str): The response type to return.
     - query (str): The user query to search for.
@@ -487,13 +442,13 @@ async def local_search_streaming(
         embedding_name=entity_description_embedding,
     )
 
-    entities_ = read_indexer_entities(nodes, entities, community_level)
+    entities_ = read_indexer_entities(entities, communities, community_level)
     covariates_ = read_indexer_covariates(covariates) if covariates is not None else []
     prompt = load_search_prompt(config.root_dir, config.local_search.prompt)
 
     search_engine = get_local_search_engine(
         config=config,
-        reports=read_indexer_reports(community_reports, nodes, community_level),
+        reports=read_indexer_reports(community_reports, communities, community_level),
         text_units=read_indexer_text_units(text_units),
         entities=entities_,
         relationships=read_indexer_relationships(relationships),
@@ -501,27 +456,16 @@ async def local_search_streaming(
         description_embedding_store=description_embedding_store,  # type: ignore
         response_type=response_type,
         system_prompt=prompt,
+        callbacks=callbacks,
     )
-    search_result = search_engine.astream_search(query=query)
-
-    # when streaming results, a context data object is returned as the first result
-    # and the query response in subsequent tokens
-    context_data = None
-    get_context_data = True
-    async for stream_chunk in search_result:
-        if get_context_data:
-            context_data = reformat_context_data(stream_chunk)  # type: ignore
-            yield context_data
-            get_context_data = False
-        else:
-            yield stream_chunk
+    return search_engine.stream_search(query=query)
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
 async def multi_index_local_search(
     config: GraphRagConfig,
-    nodes_list: list[pd.DataFrame],
     entities_list: list[pd.DataFrame],
+    communities_list: list[pd.DataFrame],
     community_reports_list: list[pd.DataFrame],
     text_units_list: list[pd.DataFrame],
     relationships_list: list[pd.DataFrame],
@@ -531,24 +475,21 @@ async def multi_index_local_search(
     response_type: str,
     streaming: bool,
     query: str,
-) -> (
-    tuple[
-        str | dict[str, Any] | list[dict[str, Any]],
-        str | list[pd.DataFrame] | dict[str, pd.DataFrame],
-    ]
-    | AsyncGenerator
-):
+    callbacks: list[QueryCallbacks] | None = None,
+) -> tuple[
+    str | dict[str, Any] | list[dict[str, Any]],
+    str | list[pd.DataFrame] | dict[str, pd.DataFrame],
+]:
     """Perform a local search across multiple indexes and return the context data and response.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes_list (list[pd.DataFrame]): A list of DataFrames containing the final nodes (from create_final_nodes.parquet)
-    - entities_list (list[pd.DataFrame]): A list of DataFrames containing the final entities (from create_final_entities.parquet)
-    - community_reports_list (list[pd.DataFrame]): A list of DataFrames containing the final community reports (from create_final_community_reports.parquet)
-    - text_units_list (list[pd.DataFrame]): A list of DataFrames containing the final text units (from create_final_text_units.parquet)
-    - relationships_list (list[pd.DataFrame]): A list of DataFrames containing the final relationships (from create_final_relationships.parquet)
-    - covariates_list (list[pd.DataFrame]): [Optional] A list of DataFrames containing the final covariates (from create_final_covariates.parquet)
+    - entities_list (list[pd.DataFrame]): A list of DataFrames containing the final entities (from entities.parquet)
+    - community_reports_list (list[pd.DataFrame]): A list of DataFrames containing the final community reports (from community_reports.parquet)
+    - text_units_list (list[pd.DataFrame]): A list of DataFrames containing the final text units (from text_units.parquet)
+    - relationships_list (list[pd.DataFrame]): A list of DataFrames containing the final relationships (from relationships.parquet)
+    - covariates_list (list[pd.DataFrame]): [Optional] A list of DataFrames containing the final covariates (from covariates.parquet)
     - index_names (list[str]): A list of index names.
     - community_level (int): The community level to search at.
     - response_type (str): The response type to return.
@@ -569,51 +510,45 @@ async def multi_index_local_search(
         raise NotImplementedError(message)
 
     links = {
-        "nodes": {},
         "community_reports": {},
+        "communities": {},
         "entities": {},
         "text_units": {},
         "relationships": {},
         "covariates": {},
     }
     max_vals = {
-        "nodes": -1,
         "community_reports": -1,
+        "communities": -1,
         "entities": -1,
         "text_units": 0,
         "relationships": -1,
         "covariates": 0,
     }
-
     community_reports_dfs = []
+    communities_dfs = []
     entities_dfs = []
-    nodes_dfs = []
     relationships_dfs = []
     text_units_dfs = []
     covariates_dfs = []
 
     for idx, index_name in enumerate(index_names):
-        # Prepare each index's nodes dataframe for merging
-        nodes_df = nodes_list[idx]
-        nodes_df["community"] = nodes_df["community"].astype(int)
-        for i in nodes_df["human_readable_id"]:
-            links["nodes"][i + max_vals["nodes"] + 1] = {
+        # Prepare each index's communities dataframe for merging
+        communities_df = communities_list[idx]
+        communities_df["community"] = communities_df["community"].astype(int)
+        for i in communities_df["community"]:
+            links["communities"][i + max_vals["communities"] + 1] = {
                 "index_name": index_name,
-                "id": i,
+                "id": str(i),
             }
-        if max_vals["nodes"] != -1:
-            nodes_df["human_readable_id"] += max_vals["nodes"] + 1
-        nodes_df["community"] = nodes_df["community"].apply(
-            lambda x: x + max_vals["community_reports"] + 1 if x != -1 else x
+        communities_df["community"] += max_vals["communities"] + 1
+        communities_df["human_readable_id"] += max_vals["communities"] + 1
+        # concat the index name to the entity_ids, since this is used for joining later
+        communities_df["entity_ids"] = communities_df["entity_ids"].apply(
+            lambda x, index_name=index_name: [i + f"-{index_name}" for i in x]
         )
-        nodes_df["title"] = nodes_df["title"].apply(
-            lambda x, index_name=index_name: x + f"-{index_name}"
-        )
-        nodes_df["id"] = nodes_df["id"].apply(
-            lambda x, index_name=index_name: x + f"-{index_name}"
-        )
-        max_vals["nodes"] = int(nodes_df["human_readable_id"].max())
-        nodes_dfs.append(nodes_df)
+        max_vals["communities"] = int(communities_df["community"].max())
+        communities_dfs.append(communities_df)
 
         # Prepare each index's community reports dataframe for merging
         community_reports_df = community_reports_list[idx]
@@ -716,7 +651,9 @@ async def multi_index_local_search(
             covariates_dfs.append(covariates_df)
 
     # Merge the dataframes
-    nodes_combined = pd.concat(nodes_dfs, axis=0, ignore_index=True, sort=False)
+    communities_combined = pd.concat(
+        communities_dfs, axis=0, ignore_index=True, sort=False
+    )
     community_reports_combined = pd.concat(
         community_reports_dfs, axis=0, ignore_index=True, sort=False
     )
@@ -732,11 +669,10 @@ async def multi_index_local_search(
         covariates_combined = pd.concat(
             covariates_dfs, axis=0, ignore_index=True, sort=False
         )
-
     result = await local_search(
         config,
-        nodes=nodes_combined,
         entities=entities_combined,
+        communities=communities_combined,
         community_reports=community_reports_combined,
         text_units=text_units_combined,
         relationships=relationships_combined,
@@ -744,6 +680,7 @@ async def multi_index_local_search(
         community_level=community_level,
         response_type=response_type,
         query=query,
+        callbacks=callbacks,
     )
 
     # Update the context data by linking index names and community ids
@@ -755,14 +692,15 @@ async def multi_index_local_search(
 @validate_call(config={"arbitrary_types_allowed": True})
 async def drift_search(
     config: GraphRagConfig,
-    nodes: pd.DataFrame,
     entities: pd.DataFrame,
+    communities: pd.DataFrame,
     community_reports: pd.DataFrame,
     text_units: pd.DataFrame,
     relationships: pd.DataFrame,
     community_level: int,
     response_type: str,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> tuple[
     str | dict[str, Any] | list[dict[str, Any]],
     str | list[pd.DataFrame] | dict[str, pd.DataFrame],
@@ -772,11 +710,10 @@ async def drift_search(
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes (pd.DataFrame): A DataFrame containing the final nodes (from create_final_nodes.parquet)
-    - entities (pd.DataFrame): A DataFrame containing the final entities (from create_final_entities.parquet)
-    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from create_final_community_reports.parquet)
-    - text_units (pd.DataFrame): A DataFrame containing the final text units (from create_final_text_units.parquet)
-    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from create_final_relationships.parquet)
+    - entities (pd.DataFrame): A DataFrame containing the final entities (from entities.parquet)
+    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from community_reports.parquet)
+    - text_units (pd.DataFrame): A DataFrame containing the final text units (from text_units.parquet)
+    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from relationships.parquet)
     - community_level (int): The community level to search at.
     - query (str): The user query to search for.
 
@@ -788,71 +725,56 @@ async def drift_search(
     ------
     TODO: Document any exceptions to expect.
     """
-    vector_store_args = {}
-    for index, store in config.vector_store.items():
-        vector_store_args[index] = store.model_dump()
-    logger.info(f"Vector Store Args: {redact(vector_store_args)}")  # type: ignore # noqa
-
-    description_embedding_store = get_embedding_store(
-        config_args=vector_store_args,  # type: ignore
-        embedding_name=entity_description_embedding,
-    )
-
-    full_content_embedding_store = get_embedding_store(
-        config_args=vector_store_args,  # type: ignore
-        embedding_name=community_full_content_embedding,
-    )
-
-    entities_ = read_indexer_entities(nodes, entities, community_level)
-    reports = read_indexer_reports(community_reports, nodes, community_level)
-    read_indexer_report_embeddings(reports, full_content_embedding_store)
-    prompt = load_search_prompt(config.root_dir, config.drift_search.prompt)
-    reduce_prompt = load_search_prompt(
-        config.root_dir, config.drift_search.reduce_prompt
-    )
-    search_engine = get_drift_search_engine(
-        config=config,
-        reports=reports,
-        text_units=read_indexer_text_units(text_units),
-        entities=entities_,
-        relationships=read_indexer_relationships(relationships),
-        description_embedding_store=description_embedding_store,  # type: ignore
-        local_system_prompt=prompt,
-        reduce_system_prompt=reduce_prompt,
-        response_type=response_type,
-    )
-
-    result: SearchResult = await search_engine.asearch(query=query)
-    response = result.response
+    callbacks = callbacks or []
+    full_response = ""
     context_data = {}
-    for key in result.context_data:
-        context_data[key] = reformat_context_data(result.context_data[key])  # type: ignore
 
-    return response, context_data
+    def on_context(context: Any) -> None:
+        nonlocal context_data
+        context_data = context
+
+    local_callbacks = NoopQueryCallbacks()
+    local_callbacks.on_context = on_context
+    callbacks.append(local_callbacks)
+
+    async for chunk in drift_search_streaming(
+        config=config,
+        entities=entities,
+        communities=communities,
+        community_reports=community_reports,
+        text_units=text_units,
+        relationships=relationships,
+        community_level=community_level,
+        response_type=response_type,
+        query=query,
+        callbacks=callbacks,
+    ):
+        full_response += chunk
+    return full_response, context_data
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
-async def drift_search_streaming(
+def drift_search_streaming(
     config: GraphRagConfig,
-    nodes: pd.DataFrame,
     entities: pd.DataFrame,
+    communities: pd.DataFrame,
     community_reports: pd.DataFrame,
     text_units: pd.DataFrame,
     relationships: pd.DataFrame,
     community_level: int,
     response_type: str,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> AsyncGenerator:
     """Perform a DRIFT search and return the context data and response.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes (pd.DataFrame): A DataFrame containing the final nodes (from create_final_nodes.parquet)
-    - entities (pd.DataFrame): A DataFrame containing the final entities (from create_final_entities.parquet)
-    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from create_final_community_reports.parquet)
-    - text_units (pd.DataFrame): A DataFrame containing the final text units (from create_final_text_units.parquet)
-    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from create_final_relationships.parquet)
+    - entities (pd.DataFrame): A DataFrame containing the final entities (from entities.parquet)
+    - community_reports (pd.DataFrame): A DataFrame containing the final community reports (from community_reports.parquet)
+    - text_units (pd.DataFrame): A DataFrame containing the final text units (from text_units.parquet)
+    - relationships (pd.DataFrame): A DataFrame containing the final relationships (from relationships.parquet)
     - community_level (int): The community level to search at.
     - query (str): The user query to search for.
 
@@ -879,8 +801,8 @@ async def drift_search_streaming(
         embedding_name=community_full_content_embedding,
     )
 
-    entities_ = read_indexer_entities(nodes, entities, community_level)
-    reports = read_indexer_reports(community_reports, nodes, community_level)
+    entities_ = read_indexer_entities(entities, communities, community_level)
+    reports = read_indexer_reports(community_reports, communities, community_level)
     read_indexer_report_embeddings(reports, full_content_embedding_store)
     prompt = load_search_prompt(config.root_dir, config.drift_search.prompt)
     reduce_prompt = load_search_prompt(
@@ -897,28 +819,16 @@ async def drift_search_streaming(
         local_system_prompt=prompt,
         reduce_system_prompt=reduce_prompt,
         response_type=response_type,
+        callbacks=callbacks,
     )
-
-    search_result = search_engine.astream_search(query=query)
-
-    # when streaming results, a context data object is returned as the first result
-    # and the query response in subsequent tokens
-    context_data = None
-    get_context_data = True
-    async for stream_chunk in search_result:
-        if get_context_data:
-            context_data = reformat_context_data(stream_chunk)  # type: ignore
-            yield context_data
-            get_context_data = False
-        else:
-            yield stream_chunk
+    return search_engine.stream_search(query=query)
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
 async def multi_index_drift_search(
     config: GraphRagConfig,
-    nodes_list: list[pd.DataFrame],
     entities_list: list[pd.DataFrame],
+    communities_list: list[pd.DataFrame],
     community_reports_list: list[pd.DataFrame],
     text_units_list: list[pd.DataFrame],
     relationships_list: list[pd.DataFrame],
@@ -927,23 +837,20 @@ async def multi_index_drift_search(
     response_type: str,
     streaming: bool,
     query: str,
-) -> (
-    tuple[
-        str | dict[str, Any] | list[dict[str, Any]],
-        str | list[pd.DataFrame] | dict[str, pd.DataFrame],
-    ]
-    | AsyncGenerator
-):
+    callbacks: list[QueryCallbacks] | None = None,
+) -> tuple[
+    str | dict[str, Any] | list[dict[str, Any]],
+    str | list[pd.DataFrame] | dict[str, pd.DataFrame],
+]:
     """Perform a DRIFT search across multiple indexes and return the context data and response.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - nodes_list (list[pd.DataFrame]): A list of DataFrames containing the final nodes (from create_final_nodes.parquet)
-    - entities_list (list[pd.DataFrame]): A list of DataFrames containing the final entities (from create_final_entities.parquet)
-    - community_reports_list (list[pd.DataFrame]): A list of DataFrames containing the final community reports (from create_final_community_reports.parquet)
-    - text_units_list (list[pd.DataFrame]): A list of DataFrames containing the final text units (from create_final_text_units.parquet)
-    - relationships_list (list[pd.DataFrame]): A list of DataFrames containing the final relationships (from create_final_relationships.parquet)
+    - entities_list (list[pd.DataFrame]): A list of DataFrames containing the final entities (from entities.parquet)
+    - community_reports_list (list[pd.DataFrame]): A list of DataFrames containing the final community reports (from community_reports.parquet)
+    - text_units_list (list[pd.DataFrame]): A list of DataFrames containing the final text units (from text_units.parquet)
+    - relationships_list (list[pd.DataFrame]): A list of DataFrames containing the final relationships (from relationships.parquet)
     - index_names (list[str]): A list of index names.
     - community_level (int): The community level to search at.
     - response_type (str): The response type to return.
@@ -964,48 +871,43 @@ async def multi_index_drift_search(
         raise NotImplementedError(message)
 
     links = {
-        "nodes": {},
         "community_reports": {},
+        "communities": {},
         "entities": {},
         "text_units": {},
         "relationships": {},
     }
     max_vals = {
-        "nodes": -1,
         "community_reports": -1,
+        "communities": -1,
         "entities": -1,
         "text_units": 0,
         "relationships": -1,
     }
 
+    communities_dfs = []
     community_reports_dfs = []
     entities_dfs = []
-    nodes_dfs = []
     relationships_dfs = []
     text_units_dfs = []
 
     for idx, index_name in enumerate(index_names):
-        # Prepare each index's nodes dataframe for merging
-        nodes_df = nodes_list[idx]
-        nodes_df["community"] = nodes_df["community"].astype(int)
-        for i in nodes_df["human_readable_id"]:
-            links["nodes"][i + max_vals["nodes"] + 1] = {
+        # Prepare each index's communities dataframe for merging
+        communities_df = communities_list[idx]
+        communities_df["community"] = communities_df["community"].astype(int)
+        for i in communities_df["community"]:
+            links["communities"][i + max_vals["communities"] + 1] = {
                 "index_name": index_name,
-                "id": i,
+                "id": str(i),
             }
-        if max_vals["nodes"] != -1:
-            nodes_df["human_readable_id"] += max_vals["nodes"] + 1
-        nodes_df["community"] = nodes_df["community"].apply(
-            lambda x: x + max_vals["community_reports"] + 1 if x != -1 else x
+        communities_df["community"] += max_vals["communities"] + 1
+        communities_df["human_readable_id"] += max_vals["communities"] + 1
+        # concat the index name to the entity_ids, since this is used for joining later
+        communities_df["entity_ids"] = communities_df["entity_ids"].apply(
+            lambda x, index_name=index_name: [i + f"-{index_name}" for i in x]
         )
-        nodes_df["title"] = nodes_df["title"].apply(
-            lambda x, index_name=index_name: x + f"-{index_name}"
-        )
-        nodes_df["id"] = nodes_df["id"].apply(
-            lambda x, index_name=index_name: x + f"-{index_name}"
-        )
-        max_vals["nodes"] = int(nodes_df["human_readable_id"].max())
-        nodes_dfs.append(nodes_df)
+        max_vals["communities"] = int(communities_df["community"].max())
+        communities_dfs.append(communities_df)
 
         # Prepare each index's community reports dataframe for merging
         community_reports_df = community_reports_list[idx]
@@ -1091,7 +993,9 @@ async def multi_index_drift_search(
         text_units_dfs.append(text_units_df)
 
     # Merge the dataframes
-    nodes_combined = pd.concat(nodes_dfs, axis=0, ignore_index=True, sort=False)
+    communities_combined = pd.concat(
+        communities_dfs, axis=0, ignore_index=True, sort=False
+    )
     community_reports_combined = pd.concat(
         community_reports_dfs, axis=0, ignore_index=True, sort=False
     )
@@ -1105,14 +1009,15 @@ async def multi_index_drift_search(
 
     result = await drift_search(
         config,
-        nodes=nodes_combined,
         entities=entities_combined,
+        communities=communities_combined,
         community_reports=community_reports_combined,
         text_units=text_units_combined,
         relationships=relationships_combined,
         community_level=community_level,
         response_type=response_type,
         query=query,
+        callbacks=callbacks,
     )
 
     # Update the context data by linking index names and community ids
@@ -1130,6 +1035,7 @@ async def basic_search(
     config: GraphRagConfig,
     text_units: pd.DataFrame,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> tuple[
     str | dict[str, Any] | list[dict[str, Any]],
     str | list[pd.DataFrame] | dict[str, pd.DataFrame],
@@ -1139,7 +1045,7 @@ async def basic_search(
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - text_units (pd.DataFrame): A DataFrame containing the final text units (from create_final_text_units.parquet)
+    - text_units (pd.DataFrame): A DataFrame containing the final text units (from text_units.parquet)
     - query (str): The user query to search for.
 
     Returns
@@ -1150,43 +1056,41 @@ async def basic_search(
     ------
     TODO: Document any exceptions to expect.
     """
-    vector_store_args = {}
-    for index, store in config.vector_store.items():
-        vector_store_args[index] = store.model_dump()
-    logger.info(f"Vector Store Args: {redact(vector_store_args)}")  # type: ignore # noqa
+    callbacks = callbacks or []
+    full_response = ""
+    context_data = {}
 
-    description_embedding_store = get_embedding_store(
-        config_args=vector_store_args,  # type: ignore
-        embedding_name=text_unit_text_embedding,
-    )
+    def on_context(context: Any) -> None:
+        nonlocal context_data
+        context_data = context
 
-    prompt = load_search_prompt(config.root_dir, config.basic_search.prompt)
+    local_callbacks = NoopQueryCallbacks()
+    local_callbacks.on_context = on_context
+    callbacks.append(local_callbacks)
 
-    search_engine = get_basic_search_engine(
+    async for chunk in basic_search_streaming(
         config=config,
-        text_units=read_indexer_text_units(text_units),
-        text_unit_embeddings=description_embedding_store,
-        system_prompt=prompt,
-    )
-
-    result: SearchResult = await search_engine.asearch(query=query)
-    response = result.response
-    context_data = reformat_context_data(result.context_data)  # type: ignore
-    return response, context_data
+        text_units=text_units,
+        query=query,
+        callbacks=callbacks,
+    ):
+        full_response += chunk
+    return full_response, context_data
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
-async def basic_search_streaming(
+def basic_search_streaming(
     config: GraphRagConfig,
     text_units: pd.DataFrame,
     query: str,
+    callbacks: list[QueryCallbacks] | None = None,
 ) -> AsyncGenerator:
     """Perform a local search and return the context data and response via a generator.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - text_units (pd.DataFrame): A DataFrame containing the final text units (from create_final_text_units.parquet)
+    - text_units (pd.DataFrame): A DataFrame containing the final text units (from text_units.parquet)
     - query (str): The user query to search for.
 
     Returns
@@ -1200,8 +1104,6 @@ async def basic_search_streaming(
     vector_store_args = {}
     for index, store in config.vector_store.items():
         vector_store_args[index] = store.model_dump()
-    else:
-        vector_store_args = None
     logger.info(f"Vector Store Args: {redact(vector_store_args)}")  # type: ignore # noqa
 
     description_embedding_store = get_embedding_store(
@@ -1216,21 +1118,9 @@ async def basic_search_streaming(
         text_units=read_indexer_text_units(text_units),
         text_unit_embeddings=description_embedding_store,
         system_prompt=prompt,
+        callbacks=callbacks,
     )
-
-    search_result = search_engine.astream_search(query=query)
-
-    # when streaming results, a context data object is returned as the first result
-    # and the query response in subsequent tokens
-    context_data = None
-    get_context_data = True
-    async for stream_chunk in search_result:
-        if get_context_data:
-            context_data = reformat_context_data(stream_chunk)  # type: ignore
-            yield context_data
-            get_context_data = False
-        else:
-            yield stream_chunk
+    return search_engine.stream_search(query=query)
 
 
 @validate_call(config={"arbitrary_types_allowed": True})
@@ -1240,19 +1130,17 @@ async def multi_index_basic_search(
     index_names: list[str],
     streaming: bool,
     query: str,
-) -> (
-    tuple[
-        str | dict[str, Any] | list[dict[str, Any]],
-        str | list[pd.DataFrame] | dict[str, pd.DataFrame],
-    ]
-    | AsyncGenerator
-):
+    callbacks: list[QueryCallbacks] | None = None,
+) -> tuple[
+    str | dict[str, Any] | list[dict[str, Any]],
+    str | list[pd.DataFrame] | dict[str, pd.DataFrame],
+]:
     """Perform a basic search across multiple indexes and return the context data and response.
 
     Parameters
     ----------
     - config (GraphRagConfig): A graphrag configuration (from settings.yaml)
-    - text_units_list (list[pd.DataFrame]): A list of DataFrames containing the final text units (from create_final_text_units.parquet)
+    - text_units_list (list[pd.DataFrame]): A list of DataFrames containing the final text units (from text_units.parquet)
     - index_names (list[str]): A list of index names.
     - streaming (bool): Whether to stream the results or not.
     - query (str): The user query to search for.
@@ -1305,4 +1193,5 @@ async def multi_index_basic_search(
         config,
         text_units=text_units_combined,
         query=query,
+        callbacks=callbacks,
     )
